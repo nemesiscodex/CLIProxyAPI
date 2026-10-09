@@ -1,9 +1,12 @@
 package auth
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 func unixSignal(t time.Time) string {
@@ -193,4 +196,82 @@ func idOf(auth *Auth) string {
 		return "<nil>"
 	}
 	return auth.ID
+}
+
+func TestSoonestResetSelectorPick(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	model := "claude-sonnet"
+	weeklySoon := func() *Auth {
+		return claudeQuotaAuth("weekly-soon", now.Add(4*time.Hour), now.Add(24*time.Hour))
+	}
+	weeklyLate := func() *Auth {
+		return claudeQuotaAuth("weekly-late", now.Add(time.Hour), now.Add(72*time.Hour))
+	}
+
+	tests := []struct {
+		name  string
+		auths func() []*Auth
+		want  string
+	}{
+		{
+			name:  "earlier weekly reset wins over earlier 5h reset",
+			auths: func() []*Auth { return []*Auth{weeklyLate(), weeklySoon()} },
+			want:  "weekly-soon",
+		},
+		{
+			name: "auth in cooldown is skipped",
+			auths: func() []*Auth {
+				cooling := weeklySoon()
+				cooling.ModelStates = map[string]*ModelState{model: {
+					Status:         StatusError,
+					Unavailable:    true,
+					NextRetryAfter: now.Add(30 * time.Minute),
+					Quota:          QuotaState{Exceeded: true, NextRecoverAt: now.Add(30 * time.Minute)},
+				}}
+				return []*Auth{cooling, weeklyLate()}
+			},
+			want: "weekly-late",
+		},
+		{
+			name: "auth without signals is picked last",
+			auths: func() []*Auth {
+				return []*Auth{{ID: "aaa-no-signals", Provider: "claude"}, weeklyLate()}
+			},
+			want: "weekly-late",
+		},
+		{
+			name: "auth without signals is picked when it is the only one left",
+			auths: func() []*Auth {
+				cooling := weeklyLate()
+				cooling.Quota.Exceeded = true
+				cooling.Quota.Reason = "credential_quota"
+				cooling.Quota.NextRecoverAt = now.Add(time.Hour)
+				return []*Auth{{ID: "zzz-no-signals", Provider: "claude"}, cooling}
+			},
+			want: "zzz-no-signals",
+		},
+		{
+			name: "higher priority tier wins over earlier reset",
+			auths: func() []*Auth {
+				high := weeklyLate()
+				high.Attributes = map[string]string{"priority": "10"}
+				return []*Auth{weeklySoon(), high}
+			},
+			want: "weekly-late",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := (&SoonestResetSelector{}).Pick(context.Background(), "claude", model, cliproxyexecutor.Options{}, tt.auths())
+			if err != nil {
+				t.Fatalf("Pick() error = %v", err)
+			}
+			if got == nil || got.ID != tt.want {
+				t.Fatalf("Pick() auth = %s, want %s", idOf(got), tt.want)
+			}
+		})
+	}
 }
