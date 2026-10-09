@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -19,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/safemode"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -481,12 +484,14 @@ func corsAllowHeadersValue(req *http.Request) string {
 // AuthMiddleware returns a Gin middleware handler that authenticates requests
 // using the configured authentication providers. When no providers are available,
 // it allows all requests (legacy behaviour).
-func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
-	return accessAuthMiddleware(manager, false)
+// The client key's access.key-credentials scope, read from scopes on every
+// request, is attached to the request context for credential selection.
+func AuthMiddleware(manager *sdkaccess.Manager, scopes *atomic.Pointer[access.KeyCredentialScopes]) gin.HandlerFunc {
+	return accessAuthMiddleware(manager, scopes, false)
 }
 
-func realtimeStandardAuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
-	return accessAuthMiddleware(manager, true)
+func realtimeStandardAuthMiddleware(manager *sdkaccess.Manager, scopes *atomic.Pointer[access.KeyCredentialScopes]) gin.HandlerFunc {
+	return accessAuthMiddleware(manager, scopes, true)
 }
 
 func closeUnconsumedRequestOnAbort(c *gin.Context) {
@@ -499,7 +504,21 @@ func closeUnconsumedRequestOnAbort(c *gin.Context) {
 	}
 }
 
-func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.HandlerFunc {
+// setRequestPrincipal records the authenticated client key and attaches its
+// credential scope to the request context, which API handlers copy into their
+// execution contexts.
+func setRequestPrincipal(c *gin.Context, scopes *atomic.Pointer[access.KeyCredentialScopes], principal, provider string) {
+	c.Set("userApiKey", principal)
+	c.Set("accessProvider", provider)
+	if scopes == nil {
+		return
+	}
+	if scope := scopes.Load().ScopeFor(principal); scope != nil {
+		c.Request = c.Request.WithContext(coreauth.WithAuthIDScope(c.Request.Context(), scope))
+	}
+}
+
+func accessAuthMiddleware(manager *sdkaccess.Manager, scopes *atomic.Pointer[access.KeyCredentialScopes], realtimeError bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {
 			middleware.CaptureAuthenticatedRequestBody(c)
@@ -513,8 +532,7 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 		result, err := manager.Authenticate(c.Request.Context(), c.Request)
 		if err == nil {
 			if result != nil {
-				c.Set("userApiKey", result.Principal)
-				c.Set("accessProvider", result.Provider)
+				setRequestPrincipal(c, scopes, result.Principal, result.Provider)
 				if len(result.Metadata) > 0 {
 					c.Set("accessMetadata", result.Metadata)
 				}
@@ -558,8 +576,8 @@ func accessAuthMiddleware(manager *sdkaccess.Manager, realtimeError bool) gin.Ha
 	}
 }
 
-func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handler) gin.HandlerFunc {
-	fallback := realtimeStandardAuthMiddleware(manager)
+func realtimeAuthMiddleware(manager *sdkaccess.Manager, scopes *atomic.Pointer[access.KeyCredentialScopes], handler *codexlive.Handler) gin.HandlerFunc {
+	fallback := realtimeStandardAuthMiddleware(manager, scopes)
 	return func(c *gin.Context) {
 		authorization, matched, errAuthenticate := handler.AuthenticateClientSecret(c.Request)
 		if !matched {
@@ -584,8 +602,7 @@ func realtimeAuthMiddleware(manager *sdkaccess.Manager, handler *codexlive.Handl
 		if provider == "" {
 			provider = "realtime-client-secret"
 		}
-		c.Set("userApiKey", principal)
-		c.Set("accessProvider", provider)
+		setRequestPrincipal(c, scopes, principal, provider)
 		reqCtx := coreusage.WithAPIKey(c.Request.Context(), principal)
 		reqCtx = coreusage.WithAccessProvider(reqCtx, provider)
 		reqCtx = coreusage.WithIsNativeKey(reqCtx, coreusage.IsNativeAccessProvider(provider))
