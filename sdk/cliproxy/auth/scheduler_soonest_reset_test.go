@@ -35,17 +35,21 @@ func TestSchedulerPick_SoonestResetMatchesSelector(t *testing.T) {
 		if errPick != nil {
 			t.Fatalf("pickSingle() #%d error = %v", index, errPick)
 		}
-		if got == nil || got.ID != "b-weekly-soon" || got.ID != selectorPick.ID {
-			t.Fatalf("pickSingle() #%d auth = %s, selector = %s, want b-weekly-soon", index, idOf(got), selectorPick.ID)
+		if got == nil || got.ID != "0-no-signals" || got.ID != selectorPick.ID {
+			t.Fatalf("pickSingle() #%d auth = %s, selector = %s, want 0-no-signals", index, idOf(got), selectorPick.ID)
 		}
 	}
 
-	got, errPick := scheduler.pickSingle(context.Background(), "claude", "", cliproxyexecutor.Options{}, map[string]struct{}{"b-weekly-soon": {}})
-	if errPick != nil {
-		t.Fatalf("pickSingle() with tried error = %v", errPick)
-	}
-	if got == nil || got.ID != "a-weekly-late" {
-		t.Fatalf("pickSingle() with tried auth = %s, want a-weekly-late", idOf(got))
+	tried := map[string]struct{}{"0-no-signals": {}}
+	for _, want := range []string{"b-weekly-soon", "a-weekly-late"} {
+		got, errPick := scheduler.pickSingle(context.Background(), "claude", "", cliproxyexecutor.Options{}, tried)
+		if errPick != nil {
+			t.Fatalf("pickSingle() with tried %v error = %v", tried, errPick)
+		}
+		if got == nil || got.ID != want {
+			t.Fatalf("pickSingle() with tried %v auth = %s, want %s", tried, idOf(got), want)
+		}
+		tried[want] = struct{}{}
 	}
 }
 
@@ -61,7 +65,8 @@ func TestSchedulerPick_MixedProvidersSoonestReset(t *testing.T) {
 			"X-Codex-Secondary-Reset-After-Seconds": "3600",
 		}},
 	}
-	scheduler := newSchedulerForTest(&SoonestResetSelector{}, append(soonestResetFixtureAuths(now), codex)...)
+	measured := soonestResetFixtureAuths(now)[:2]
+	scheduler := newSchedulerForTest(&SoonestResetSelector{}, append(measured, codex)...)
 
 	got, provider, errPick := scheduler.pickMixed(context.Background(), []string{"claude", "codex"}, "", cliproxyexecutor.Options{}, nil)
 	if errPick != nil {
@@ -98,15 +103,24 @@ func TestManager_SoonestResetUsesSignalsObservedOnAnotherModel(t *testing.T) {
 	}
 
 	now := time.Now()
-	ctx := internallogging.WithResponseHeadersHolder(context.Background())
-	internallogging.SetResponseHeaders(ctx, http.Header{
-		"Anthropic-Ratelimit-Unified-5h-Reset": []string{unixSignal(now.Add(time.Hour))},
-		"Anthropic-Ratelimit-Unified-7d-Reset": []string{unixSignal(now.Add(24 * time.Hour))},
-	})
-	manager.MarkResult(ctx, Result{AuthID: "soonest-b", Provider: "claude", Model: observedModel, Success: true})
+	observe := func(authID string, weeklyReset time.Time) {
+		ctx := internallogging.WithResponseHeadersHolder(context.Background())
+		internallogging.SetResponseHeaders(ctx, http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Reset": []string{unixSignal(now.Add(time.Hour))},
+			"Anthropic-Ratelimit-Unified-7d-Reset": []string{unixSignal(weeklyReset)},
+		})
+		manager.MarkResult(ctx, Result{AuthID: authID, Provider: "claude", Model: observedModel, Success: true})
+	}
 
+	observe("soonest-a", now.Add(24*time.Hour))
 	got, errPick = manager.scheduler.pickSingle(context.Background(), "claude", pickedModel, cliproxyexecutor.Options{}, nil)
 	if errPick != nil || got == nil || got.ID != "soonest-b" {
-		t.Fatalf("pickSingle() after observation on %s = %s, %v; want soonest-b", observedModel, idOf(got), errPick)
+		t.Fatalf("pickSingle() after measuring soonest-a on %s = %s, %v; want unmeasured soonest-b", observedModel, idOf(got), errPick)
+	}
+
+	observe("soonest-b", now.Add(48*time.Hour))
+	got, errPick = manager.scheduler.pickSingle(context.Background(), "claude", pickedModel, cliproxyexecutor.Options{}, nil)
+	if errPick != nil || got == nil || got.ID != "soonest-a" {
+		t.Fatalf("pickSingle() after measuring both on %s = %s, %v; want soonest-a", observedModel, idOf(got), errPick)
 	}
 }

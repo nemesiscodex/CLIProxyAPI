@@ -166,6 +166,9 @@ func TestSoonestResetLess(t *testing.T) {
 	weeklySoonTwin := claudeQuotaAuth("c", now.Add(4*time.Hour), now.Add(24*time.Hour))
 	weeklySoonEarlierFiveHour := claudeQuotaAuth("d", now.Add(2*time.Hour), now.Add(24*time.Hour))
 	noSignals := &Auth{ID: "0", Provider: "claude"}
+	unmeasuredTwin := &Auth{ID: "1", Provider: "codex"}
+	unreportable := &Auth{ID: "0-gemini", Provider: "gemini"}
+	unreportableTwin := &Auth{ID: "1-gemini", Provider: "gemini"}
 
 	tests := []struct {
 		name string
@@ -177,8 +180,14 @@ func TestSoonestResetLess(t *testing.T) {
 		{name: "equal weekly falls through to 5h", a: weeklySoonEarlierFiveHour, b: weeklySoon, want: true},
 		{name: "equal windows tie break by id", a: weeklySoon, b: weeklySoonTwin, want: true},
 		{name: "equal windows tie break by id reversed", a: weeklySoonTwin, b: weeklySoon, want: false},
-		{name: "auth with windows beats auth without", a: weeklyLate, b: noSignals, want: true},
-		{name: "auth without windows loses despite lower id", a: noSignals, b: weeklyLate, want: false},
+		{name: "unmeasured auth beats auth with windows", a: noSignals, b: weeklyLate, want: true},
+		{name: "auth with windows loses to unmeasured auth", a: weeklyLate, b: noSignals, want: false},
+		{name: "unmeasured auths tie break by id", a: noSignals, b: unmeasuredTwin, want: true},
+		{name: "unmeasured auths tie break by id reversed", a: unmeasuredTwin, b: noSignals, want: false},
+		{name: "auth with windows beats provider without windows", a: weeklyLate, b: unreportable, want: true},
+		{name: "provider without windows loses despite lower id", a: unreportable, b: weeklyLate, want: false},
+		{name: "unmeasured auth beats provider without windows", a: noSignals, b: unreportable, want: true},
+		{name: "providers without windows tie break by id", a: unreportable, b: unreportableTwin, want: true},
 		{name: "nil sorts last", a: weeklyLate, b: nil, want: true},
 	}
 	for _, tt := range tests {
@@ -235,9 +244,16 @@ func TestSoonestResetSelectorPick(t *testing.T) {
 			want: "weekly-late",
 		},
 		{
-			name: "auth without signals is picked last",
+			name: "auth without signals is picked first so it gets measured",
 			auths: func() []*Auth {
-				return []*Auth{{ID: "aaa-no-signals", Provider: "claude"}, weeklyLate()}
+				return []*Auth{weeklySoon(), {ID: "zzz-no-signals", Provider: "claude"}}
+			},
+			want: "zzz-no-signals",
+		},
+		{
+			name: "provider without windows is picked last",
+			auths: func() []*Auth {
+				return []*Auth{{ID: "aaa-gemini", Provider: "gemini"}, weeklyLate()}
 			},
 			want: "weekly-late",
 		},
