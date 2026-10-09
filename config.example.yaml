@@ -104,6 +104,20 @@ access:
     - "your-api-key-1"
     - "your-api-key-2"
     - "your-api-key-3"
+  # Optional: limit a client API key to a subset of upstream credentials. Keys without an entry
+  # may use every credential. A limited key never falls back to other credentials: when none of
+  # its credentials is available, the request fails. Routing strategy, priorities, cooldowns,
+  # and retries apply within the allowed set. Entries for keys not listed in api-keys are ignored.
+  # Patterns use Go path.Match syntax ("*" does not cross "/") against the credential's auth ID:
+  #   - OAuth login files: the path relative to auth-dir, e.g. "claude-user@example.com.json".
+  #   - Upstream API keys under api-keys: "<provider>:apikey:<hash>" (e.g. match every Claude
+  #     key with "claude:apikey:*"); OpenAI-compatible providers use
+  #     "openai-compatibility:<name>:<hash>".
+  # key-credentials:
+  #   - key: "your-api-key-2"
+  #     credentials:
+  #       - "claude-7cb6bfeb-*.json"
+  #       - "codex-*.json"
 
 # Optional credential concurrency and observation contracts.
 
