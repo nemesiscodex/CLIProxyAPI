@@ -165,6 +165,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.exampleAPIKeySafeModeActive.Store(true)
 	}
 	accessConfigApplied := s.applyAccessConfig(oldCfg, cfg)
+	s.keyCredentialScopes.Store(access.NewKeyCredentialScopes(&cfg.SDKConfig))
 	if accessConfigApplied || exampleAPIKeySafeModeRequired {
 		s.exampleAPIKeySafeModeActive.Store(exampleAPIKeySafeModeRequired)
 	}
