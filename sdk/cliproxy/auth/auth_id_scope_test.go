@@ -252,3 +252,38 @@ func TestAntigravityCreditsFallbackRespectsAuthIDScope(t *testing.T) {
 		t.Fatalf("credits attempts = %v, want [%s]", executor.creditsAuthIDs, allowed)
 	}
 }
+
+func TestSessionAffinityBindingDoesNotBypassAuthIDScope(t *testing.T) {
+	const (
+		model   = "claude-scope-session-affinity"
+		other   = "aaa-claude-other.json"
+		allowed = "claude-allowed-a.json"
+		session = "scope-session-affinity"
+	)
+	selector := NewSessionAffinitySelector(&FillFirstSelector{})
+	defer selector.Stop()
+	executor := &scopeRecordingExecutor{}
+	manager := NewManager(nil, selector, nil)
+	manager.RegisterExecutor(executor)
+	for _, id := range []string{other, allowed} {
+		registry.GetGlobalRegistry().RegisterClient(id, "claude", []*registry.ModelInfo{{ID: model}})
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+		if _, errRegister := manager.Register(context.Background(), &Auth{ID: id, Provider: "claude", Status: StatusActive}); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", id, errRegister)
+		}
+	}
+	opts := cliproxyexecutor.Options{Headers: http.Header{"X-Session-Id": []string{session}}}
+	execute := func(ctx context.Context) {
+		t.Helper()
+		if _, errExecute := manager.Execute(ctx, []string{"claude"}, cliproxyexecutor.Request{Model: model}, opts); errExecute != nil {
+			t.Fatalf("Execute() error = %v", errExecute)
+		}
+	}
+
+	execute(context.Background())
+	scope, _ := NewAuthIDScope([]string{"claude-allowed-*"})
+	execute(WithAuthIDScope(context.Background(), scope))
+	if got := executor.attempts(); !reflect.DeepEqual(got, []string{other, allowed}) {
+		t.Fatalf("attempts = %v, want the session bound to %s, then the scoped request on %s", got, other, allowed)
+	}
+}
