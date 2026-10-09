@@ -73,7 +73,8 @@ type FillFirstSelector struct{}
 
 // SoonestResetSelector selects the available credential whose quota window
 // resets soonest, so quota that would otherwise expire unused is spent first.
-// Credentials without quota signals are used last.
+// A credential whose windows are not known yet is used first so it gets
+// measured; credentials whose provider never reports windows are used last.
 type SoonestResetSelector struct{}
 
 type blockReason int

@@ -102,18 +102,51 @@ func parsePositiveSignal(raw string) (int64, bool) {
 	return value, true
 }
 
+// quotaResetRank groups credentials before their windows are compared.
+type quotaResetRank int
+
+const (
+	// quotaResetRankUnmeasured is a credential whose provider reports windows
+	// but none is known yet, e.g. after a restart. It goes first so one
+	// request measures it; otherwise it would never be used until every
+	// measured credential is exhausted.
+	quotaResetRankUnmeasured quotaResetRank = iota
+	quotaResetRankMeasured
+	// quotaResetRankUnreportable is a credential whose provider never reports
+	// windows, so it is used only after every other credential.
+	quotaResetRankUnreportable
+)
+
+func quotaResetRankOf(auth *Auth, windows []quotaWindow) quotaResetRank {
+	switch {
+	case len(windows) > 0:
+		return quotaResetRankMeasured
+	case providerReportsQuotaWindows(auth.Provider):
+		return quotaResetRankUnmeasured
+	default:
+		return quotaResetRankUnreportable
+	}
+}
+
+// providerReportsQuotaWindows reports whether quotaWindowsFor can ever return
+// windows for the provider.
+func providerReportsQuotaWindows(provider string) bool {
+	return len(quotaWindowSpecs[strings.ToLower(strings.TrimSpace(provider))]) > 0
+}
+
 // soonestResetLess orders a before b when a's quota resets sooner. Windows are
 // compared longest first, so the weekly reset decides before the 5h reset.
-// Credentials without any known window sort after those with one, and the
-// auth ID breaks ties so the order is deterministic.
+// Unmeasured credentials of a window-reporting provider sort first so they get
+// measured, credentials whose provider never reports windows sort last, and
+// the auth ID breaks ties so the order is deterministic.
 func soonestResetLess(a, b *Auth, now time.Time) bool {
 	if a == nil || b == nil {
 		return a != nil
 	}
 	windowsA := quotaWindowsFor(a.Provider, a.Quota, now)
 	windowsB := quotaWindowsFor(b.Provider, b.Quota, now)
-	if (len(windowsA) == 0) != (len(windowsB) == 0) {
-		return len(windowsA) > 0
+	if rankA, rankB := quotaResetRankOf(a, windowsA), quotaResetRankOf(b, windowsB); rankA != rankB {
+		return rankA < rankB
 	}
 	for i := 0; i < len(windowsA) || i < len(windowsB); i++ {
 		if i >= len(windowsA) || i >= len(windowsB) {
