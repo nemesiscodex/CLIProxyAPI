@@ -948,7 +948,24 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
 	return auth, executor, provider, nil
 }
 
+// pickHomeDispatchSelection returns Home's selection, rejecting it when the
+// credential falls outside the request's AuthIDScope. Home chooses remotely, so
+// the scope can only be enforced on its answer.
 func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
+	selection, errSelection := m.dispatchHomeSelection(ctx, model, opts)
+	if errSelection != nil || selection == nil {
+		return selection, errSelection
+	}
+	if scope := AuthIDScopeFromContext(ctx); scope != nil {
+		if auth := selection.CloneAuth(); auth == nil || !scope.Allows(auth.ID) {
+			selection.End("credential_scope")
+			return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
+	}
+	return selection, nil
+}
+
+func (m *Manager) dispatchHomeSelection(ctx context.Context, model string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
 	if m == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
@@ -1281,10 +1298,11 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
 		return nil, nil
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	scope := AuthIDScopeFromContext(ctx)
 	var candidates []creditsCandidateEntry
 	m.mu.RLock()
 	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled || !scope.Allows(auth.ID) {
 			continue
 		}
 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
