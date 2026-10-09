@@ -494,6 +494,9 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		requestCtx = c.Request.Context()
 	}
 
+	if requestCtx != nil {
+		parentCtx = coreauth.WithAuthIDScope(parentCtx, coreauth.AuthIDScopeFromContext(requestCtx))
+	}
 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
 		if requestID := logging.GetRequestID(requestCtx); requestID != "" {
 			parentCtx = logging.WithRequestID(parentCtx, requestID)

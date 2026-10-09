@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -54,6 +55,9 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, errMsg
 	}
 	if routeDecision.ExecutorPluginID != "" {
+		if errMsg := credentialScopedPluginExecutorError(ctx); errMsg != nil {
+			return nil, nil, errMsg
+		}
 		return h.executeWithPluginExecutor(ctx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, allowImageModel, routeDecision, execOptions)
@@ -129,6 +133,9 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	originalRequestedModel := modelName
 	routeDecision := h.applyModelRouter(ctx, handlerType, modelName, rawJSON, false, execOptions)
 	if routeDecision.ExecutorPluginID != "" {
+		if errMsg := credentialScopedPluginExecutorError(ctx); errMsg != nil {
+			return nil, nil, errMsg
+		}
 		return h.countWithPluginExecutor(ctx, handlerType, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, false, routeDecision, execOptions)
@@ -407,4 +414,17 @@ func (h *BaseAPIHandler) pluginExecutorHost() PluginExecutorHost {
 		return executorHost
 	}
 	return nil
+}
+
+// credentialScopedPluginExecutorError refuses executor-plugin routes for client
+// keys limited by access.key-credentials: the plugin reaches upstream without
+// the auth manager, so the credential scope cannot be enforced.
+func credentialScopedPluginExecutorError(ctx context.Context) *interfaces.ErrorMessage {
+	if coreauth.AuthIDScopeFromContext(ctx) == nil {
+		return nil
+	}
+	return &interfaces.ErrorMessage{
+		StatusCode: http.StatusForbidden,
+		Error:      errors.New("this API key is limited to specific credentials and cannot use executor plugin routes"),
+	}
 }
