@@ -62,6 +62,10 @@ type SDKConfig struct {
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
+	// KeyCredentials limits client API keys to a subset of upstream credentials.
+	// Keys without an entry may use every credential.
+	KeyCredentials []ClientKeyCredentials `yaml:"key-credentials,omitempty" json:"key-credentials,omitempty"`
+
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
@@ -107,4 +111,11 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+}
+
+// ClientKeyCredentials restricts one client API key to the upstream credentials
+// whose auth ID matches one of the path.Match patterns in Credentials.
+type ClientKeyCredentials struct {
+	Key         string   `yaml:"key" json:"key"`
+	Credentials []string `yaml:"credentials" json:"credentials"`
 }
