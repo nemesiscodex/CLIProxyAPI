@@ -71,6 +71,11 @@ func weightedSelectorStateModel(ctx context.Context, availabilityModel string) s
 // rolling-window subscription caps (e.g. chat message limits).
 type FillFirstSelector struct{}
 
+// SoonestResetSelector selects the available credential whose quota window
+// resets soonest, so quota that would otherwise expire unused is spent first.
+// Credentials without quota signals are used last.
+type SoonestResetSelector struct{}
+
 type blockReason int
 
 const (
@@ -818,6 +823,24 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	return available[0], nil
+}
+
+// Pick selects the available auth whose quota resets soonest.
+func (s *SoonestResetSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	_ = opts
+	now := time.Now()
+	available, err := getSelectorAvailableAuths(ctx, auths, provider, model, now)
+	if err != nil {
+		return nil, err
+	}
+	available = preferCodexWebsocketAuths(ctx, provider, available)
+	picked := available[0]
+	for _, candidate := range available[1:] {
+		if soonestResetLess(candidate, picked, now) {
+			picked = candidate
+		}
+	}
+	return picked, nil
 }
 
 func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, blockReason, time.Time) {
