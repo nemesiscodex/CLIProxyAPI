@@ -22,6 +22,7 @@ const (
 	schedulerStrategyRoundRobin         schedulerStrategy = 1
 	schedulerStrategyFillFirst          schedulerStrategy = 2
 	schedulerStrategyWeightedRoundRobin schedulerStrategy = 3
+	schedulerStrategySoonestReset       schedulerStrategy = 4
 )
 
 // scheduledState describes how an auth currently participates in a model shard.
@@ -77,6 +78,10 @@ type modelScheduler struct {
 	priorityOrder   []int
 	readyByPriority map[int]*readyBucket
 	blocked         cooldownQueue
+	// providerAuths is the owning provider's latest auth metadata. A request
+	// result refreshes only the shards for its model, so an entry here can
+	// hold an older snapshot of credential-wide quota signals.
+	providerAuths map[string]*scheduledAuthMeta
 }
 
 // scheduledAuth stores the runtime scheduling state for a single auth inside a model shard.
@@ -168,6 +173,8 @@ func selectorStrategy(selector Selector) schedulerStrategy {
 	switch selector.(type) {
 	case *FillFirstSelector:
 		return schedulerStrategyFillFirst
+	case *SoonestResetSelector:
+		return schedulerStrategySoonestReset
 	case *WeightedRoundRobinSelector:
 		return schedulerStrategyWeightedRoundRobin
 	case nil, *RoundRobinSelector:
@@ -527,6 +534,29 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			if picked != nil {
 				return picked, providerKey, nil
 			}
+		}
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
+	}
+
+	if strategy == schedulerStrategySoonestReset {
+		var best, bestQuota *Auth
+		bestProvider := ""
+		for providerIndex, providerKey := range normalized {
+			shard := candidateShards[providerIndex]
+			if shard == nil {
+				continue
+			}
+			picked := shard.pickReadyAtPriorityLocked(false, bestPriority, strategy, predicate)
+			if picked == nil {
+				continue
+			}
+			pickedQuota := shard.latestAuthLocked(picked)
+			if best == nil || soonestResetLess(pickedQuota, bestQuota, now) {
+				best, bestQuota, bestProvider = picked, pickedQuota, providerKey
+			}
+		}
+		if best != nil {
+			return best, bestProvider, nil
 		}
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
@@ -1169,6 +1199,7 @@ func (p *providerScheduler) ensureModelLocked(modelKey string, now time.Time) *m
 		modelKey:        modelKey,
 		entries:         make(map[string]*scheduledAuth),
 		readyByPriority: make(map[int]*readyBucket),
+		providerAuths:   p.auths,
 	}
 	for _, meta := range p.auths {
 		if meta == nil || !meta.supportsModel(modelKey) {
@@ -1376,6 +1407,8 @@ func (m *modelScheduler) pickReadyAtPriorityLocked(preferWebsocket bool, priorit
 	switch strategy {
 	case schedulerStrategyFillFirst:
 		picked = view.pickFirst(predicate)
+	case schedulerStrategySoonestReset:
+		picked = m.pickSoonestResetLocked(view, predicate, time.Now())
 	case schedulerStrategyWeightedRoundRobin:
 		picked = view.pickWeighted(predicate)
 	default:
@@ -1385,6 +1418,35 @@ func (m *modelScheduler) pickReadyAtPriorityLocked(preferWebsocket bool, priorit
 		return nil
 	}
 	return picked.auth
+}
+
+// pickSoonestResetLocked returns the ready entry whose quota resets soonest
+// without advancing cursors, judged on the provider's latest auth snapshots.
+func (m *modelScheduler) pickSoonestResetLocked(view *readyView, predicate func(*scheduledAuth) bool, now time.Time) *scheduledAuth {
+	var best *scheduledAuth
+	var bestQuota *Auth
+	for _, entry := range view.flat {
+		if entry == nil || entry.auth == nil || (predicate != nil && !predicate(entry)) {
+			continue
+		}
+		entryQuota := m.latestAuthLocked(entry.auth)
+		if best == nil || soonestResetLess(entryQuota, bestQuota, now) {
+			best, bestQuota = entry, entryQuota
+		}
+	}
+	return best
+}
+
+// latestAuthLocked returns the provider's newest snapshot of auth, falling
+// back to auth itself when the provider no longer tracks it.
+func (m *modelScheduler) latestAuthLocked(auth *Auth) *Auth {
+	if m == nil || auth == nil {
+		return auth
+	}
+	if meta := m.providerAuths[auth.ID]; meta != nil && meta.auth != nil {
+		return meta.auth
+	}
+	return auth
 }
 
 func (m *modelScheduler) readyCountAtPriorityLocked(preferWebsocket bool, priority int, predicate func(*scheduledAuth) bool) int {
