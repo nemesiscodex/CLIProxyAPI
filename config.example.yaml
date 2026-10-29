@@ -153,6 +153,15 @@ access:
 #     max-details: 10000
 #     max-string-bytes: 256
 #     staging-retention: 1m
+#
+#   # Quota history polls each enabled Claude and Codex OAuth credential's usage endpoint on a
+#   # timer and keeps 21 days of remaining-percent samples on disk, so the management dashboard
+#   # can draw burn-rate predictions even when no browser was open. Read it from
+#   # GET /v8/management/credentials/quota-history.
+#
+#   quota-history:
+#     enabled: false # default false
+#     interval: 15m # Go duration; default 15m, minimum 1m
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
