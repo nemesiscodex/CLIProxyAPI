@@ -104,6 +104,7 @@ retain the corresponding business operation's fields.
 | `/credentials/status` | PATCH | Change credential status. |
 | `/credentials/fields` | PATCH | Change credential fields. |
 | `/credentials/refresh` | POST | Refresh credentials. |
+| `/credentials/quota-history` | GET | Get recorded Claude and Codex quota samples. See [Quota history](#quota-history). |
 | `/oauth/import?provider=vertex` | POST | Import a Vertex service account using a multipart `file` upload. |
 | `/oauth/auth-url?provider=<provider>` | GET | Start built-in or plugin OAuth. |
 | `/oauth/siwc/bind` | POST | Start SIWC binding to an existing file-backed Codex OAuth credential. |
@@ -116,6 +117,41 @@ retain the corresponding business operation's fields.
 | `/plugins/store` | GET | List the plugin store. |
 | `/plugins/store/<id>/install` | POST | Install or update a plugin. |
 | `/plugins/<id>/quota` | GET, POST, DELETE | Read, fetch, or reset plugin quota. |
+
+### Quota history
+
+When `credentials.quota-history.enabled` is true, the server reads the usage
+endpoint of each enabled Claude and Codex credential once shortly after startup
+and then every `credentials.quota-history.interval` (default `15m`, minimum
+`1m`). It polls one credential at a time and keeps 21 days of samples, at most
+3000 per window. The history is saved to `state/quota-history.json` under
+`WRITABLE_PATH` when that is set, and next to the config file otherwise.
+
+`GET /v8/management/credentials/quota-history` returns:
+
+```json
+{
+  "interval_seconds": 900,
+  "accounts": [
+    {
+      "name": "claude-user@example.com.json",
+      "provider": "claude",
+      "windows": {
+        "seven-day": [[1761700000000, 61.0], [1761700900000, 60.5]],
+        "five-hour": [[1761700000000, 88.0]]
+      }
+    }
+  ]
+}
+```
+
+- `name` is the credential `name` from `GET /v8/management/credentials`.
+- Each sample is `[atMs, remainingPercent]`: Unix milliseconds and the percent
+  remaining (0 to 100), in ascending time order.
+- Claude windows are `five-hour` and `seven-day`. Codex windows are `five-hour`,
+  `weekly`, and `monthly` from the main rate limit.
+- When the feature is disabled, `accounts` is an empty list and
+  `interval_seconds` is still the configured interval.
 
 ## OAuth
 
