@@ -48,6 +48,9 @@ type Config struct {
 	// CredentialInFlight configures credential observation snapshots.
 	CredentialInFlight CredentialInFlightConfig `yaml:"credential-in-flight" json:"credential-in-flight"`
 
+	// QuotaHistory configures the background recorder of Claude and Codex quota percentages.
+	QuotaHistory QuotaHistoryConfig `yaml:"quota-history" json:"quota-history"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
