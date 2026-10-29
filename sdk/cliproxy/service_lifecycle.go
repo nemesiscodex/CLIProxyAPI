@@ -130,6 +130,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	s.startQuotaHistory(ctx)
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)
@@ -302,6 +303,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.watcherCancel != nil {
 			s.watcherCancel()
 		}
+		s.stopQuotaHistory()
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
 		}
